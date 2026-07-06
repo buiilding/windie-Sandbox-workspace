@@ -14,9 +14,8 @@ The repositories stay as submodules so each project keeps its own history and ow
 
 ```text
 windie/           Windie runtime repository
-bifrost/          Bifrost repository
+bifrost/          Windie Bifrost fork
 cua/              CUA repository
-patches/bifrost/  Windie-required Bifrost commits that are not on an upstream remote yet
 scripts/          Workspace helpers
 ```
 
@@ -31,8 +30,7 @@ cd windie-Sandbox-workspace
 `bootstrap.sh` does three explicit things:
 
 1. Initializes submodules.
-2. Applies the local Windie Bifrost patches onto the pinned Bifrost base.
-3. Builds the Windie release binary.
+2. Builds the Windie release binary.
 
 It does not install provider keys or silently install CUA system permissions.
 
@@ -78,6 +76,6 @@ Then open the inspector URL printed by the frontend dev server.
 
 This prints submodule commits and checks whether the Windie binary, local Bifrost binary, and `cua-driver` command are available.
 
-## Current Bifrost Caveat
+## Bifrost Fork
 
-The local Bifrost changes used by Windie are stored in `patches/bifrost/` because they are not currently available from a pushed Bifrost fork. When those commits live on a remote branch, replace the patches with a normal submodule pointer to that fork and commit.
+The `bifrost` submodule points at `buiilding/bifrost` branch `windie-dev`. That branch contains the Bifrost changes Windie expects for local gateway startup and model listing.

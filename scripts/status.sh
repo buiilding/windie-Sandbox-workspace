@@ -22,11 +22,7 @@ else
   echo "local gateway binary missing: build Bifrost or let Windie use its public fallback"
 fi
 
-if git -C "$ROOT/bifrost" log --oneline -5 | grep -q "Expose chat-capable model filtering"; then
-  echo "Windie Bifrost patches applied"
-else
-  echo "Windie Bifrost patches not applied: run ./scripts/bootstrap.sh"
-fi
+git -C "$ROOT/bifrost" log -1 --oneline
 
 echo
 echo "CUA"
