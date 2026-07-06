@@ -1,0 +1,328 @@
+From 5a7b8535dd96d167973619cb0d3c06af6e2e1169 Mon Sep 17 00:00:00 2001
+From: peter bui <peterbuics@gmail.com>
+Date: Mon, 6 Jul 2026 13:14:18 -0700
+Subject: [PATCH 2/2] Expose chat-capable model filtering
+
+Adds model catalog request-type lookups and filters /v1/models plus model detail responses by request_type. This lets clients request chat-capable model lists without provider-name heuristics.
+---
+ framework/modelcatalog/datasheet/store.go     | 21 +++++
+ framework/modelcatalog/pricing.go             |  6 ++
+ transports/bifrost-http/handlers/inference.go | 23 ++++-
+ transports/bifrost-http/handlers/providers.go | 52 +++++++-----
+ .../bifrost-http/handlers/providers_test.go   | 84 +++++++++++++++++++
+ 5 files changed, 166 insertions(+), 20 deletions(-)
+
+diff --git a/framework/modelcatalog/datasheet/store.go b/framework/modelcatalog/datasheet/store.go
+index b6f6010..1e482fc 100644
+--- a/framework/modelcatalog/datasheet/store.go
++++ b/framework/modelcatalog/datasheet/store.go
+@@ -345,6 +345,27 @@ func (s *Store) IsRequestTypeSupported(model string, requestType schemas.Request
+ 	return ok && slices.Contains(outputs, string(requestType))
+ }
+ 
++// GetSupportedRequestTypes returns the request types a model declares through
++// the model-parameters datasheet. Unknown models return nil.
++func (s *Store) GetSupportedRequestTypes(model string) []schemas.RequestType {
++	s.mu.RLock()
++	outputs, ok := s.supportedResponseTypes[model]
++	s.mu.RUnlock()
++	if !ok {
++		return nil
++	}
++
++	values := make([]string, len(outputs))
++	copy(values, outputs)
++	slices.Sort(values)
++
++	requestTypes := make([]schemas.RequestType, 0, len(values))
++	for _, value := range values {
++		requestTypes = append(requestTypes, schemas.RequestType(value))
++	}
++	return requestTypes
++}
++
+ // GetSupportedParameters returns the list of OpenAI-compatible parameter
+ // names a model accepts (e.g. temperature, top_p, tools). nil for unknown.
+ func (s *Store) GetSupportedParameters(model string) []string {
+diff --git a/framework/modelcatalog/pricing.go b/framework/modelcatalog/pricing.go
+index 870571c..9b9bb3a 100644
+--- a/framework/modelcatalog/pricing.go
++++ b/framework/modelcatalog/pricing.go
+@@ -23,6 +23,12 @@ func (mc *ModelCatalog) IsRequestTypeSupported(model string, provider schemas.Mo
+ 	return mc.datasheet.IsRequestTypeSupported(model, requestType)
+ }
+ 
++// GetSupportedRequestTypes returns the request types a model declares through
++// the model-parameters datasheet.
++func (mc *ModelCatalog) GetSupportedRequestTypes(model string) []schemas.RequestType {
++	return mc.datasheet.GetSupportedRequestTypes(model)
++}
++
+ func (mc *ModelCatalog) GetSupportedParameters(model string) []string {
+ 	return mc.datasheet.GetSupportedParameters(model)
+ }
+diff --git a/transports/bifrost-http/handlers/inference.go b/transports/bifrost-http/handlers/inference.go
+index c737f05..47e4f23 100644
+--- a/transports/bifrost-http/handlers/inference.go
++++ b/transports/bifrost-http/handlers/inference.go
+@@ -806,6 +806,11 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
+ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
+ 	// Get provider from query parameters
+ 	provider := string(ctx.QueryArgs().Peek("provider"))
++	requestType := schemas.RequestType(string(ctx.QueryArgs().Peek("request_type")))
++	if requestType != "" && h.config.ModelCatalog == nil {
++		SendError(ctx, fasthttp.StatusInternalServerError, "model catalog not available")
++		return
++	}
+ 
+ 	// Convert context
+ 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
+@@ -839,7 +844,7 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
+ 	extraParams := map[string]interface{}{}
+ 	for k, v := range ctx.QueryArgs().All() {
+ 		s := string(k)
+-		if s != "provider" && s != "page_size" && s != "page_token" {
++		if s != "provider" && s != "page_size" && s != "page_token" && s != "request_type" {
+ 			extraParams[s] = string(v)
+ 		}
+ 	}
+@@ -865,6 +870,7 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
+ 	}
+ 
+ 	enrichAndFilterListModelsResponse(resp, h.config.ModelCatalog)
++	filterListModelsResponseByRequestType(resp, h.config.ModelCatalog, requestType)
+ 	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
+ 		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+ 	}
+@@ -942,6 +948,21 @@ func enrichAndFilterListModelsResponse(resp *schemas.BifrostListModelsResponse,
+ 	resp.Data = models
+ }
+ 
++func filterListModelsResponseByRequestType(resp *schemas.BifrostListModelsResponse, catalog *modelcatalog.ModelCatalog, requestType schemas.RequestType) {
++	if resp == nil || len(resp.Data) == 0 || catalog == nil || requestType == "" {
++		return
++	}
++
++	models := resp.Data[:0]
++	for _, modelEntry := range resp.Data {
++		provider, modelName := schemas.ParseModelString(modelEntry.ID, "")
++		if catalog.IsRequestTypeSupported(modelName, provider, requestType) {
++			models = append(models, modelEntry)
++		}
++	}
++	resp.Data = models
++}
++
+ // prepareTextCompletionRequest prepares a BifrostTextCompletionRequest from the HTTP request body
+ func prepareTextCompletionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*TextRequest, *schemas.BifrostTextCompletionRequest, error) {
+ 	req, base, err := prepareRequest[TextRequest](ctx, config, textParamsKnownFields)
+diff --git a/transports/bifrost-http/handlers/providers.go b/transports/bifrost-http/handlers/providers.go
+index bba296e..bc26569 100644
+--- a/transports/bifrost-http/handlers/providers.go
++++ b/transports/bifrost-http/handlers/providers.go
+@@ -636,15 +636,16 @@ type ListModelsResponse struct {
+ 
+ // ModelDetailsResponse represents a model with capability metadata.
+ type ModelDetailsResponse struct {
+-	Name                 string                `json:"name"`
+-	Provider             string                `json:"provider"`
+-	ContextLength        *int                  `json:"context_length,omitempty"`
+-	MaxInputTokens       *int                  `json:"max_input_tokens,omitempty"`
+-	MaxOutputTokens      *int                  `json:"max_output_tokens,omitempty"`
+-	Architecture         *schemas.Architecture `json:"architecture,omitempty"`
+-	IsDeprecated         bool                  `json:"is_deprecated,omitempty"`
+-	AdditionalAttributes map[string]string     `json:"additional_attributes,omitempty"`
+-	AccessibleByKeys     []string              `json:"accessible_by_keys,omitempty"`
++	Name                  string                `json:"name"`
++	Provider              string                `json:"provider"`
++	ContextLength         *int                  `json:"context_length,omitempty"`
++	MaxInputTokens        *int                  `json:"max_input_tokens,omitempty"`
++	MaxOutputTokens       *int                  `json:"max_output_tokens,omitempty"`
++	Architecture          *schemas.Architecture `json:"architecture,omitempty"`
++	SupportedRequestTypes []schemas.RequestType `json:"supported_request_types,omitempty"`
++	IsDeprecated          bool                  `json:"is_deprecated,omitempty"`
++	AdditionalAttributes  map[string]string     `json:"additional_attributes,omitempty"`
++	AccessibleByKeys      []string              `json:"accessible_by_keys,omitempty"`
+ }
+ 
+ // ListModelDetailsResponse represents the response for listing detailed models.
+@@ -654,12 +655,13 @@ type ListModelDetailsResponse struct {
+ }
+ 
+ type modelListQuery struct {
+-	Provider   schemas.ModelProvider
+-	Query      string
+-	KeyIDs     []string
+-	Limit      int
+-	Offset     int
+-	Unfiltered bool
++	Provider    schemas.ModelProvider
++	Query       string
++	KeyIDs      []string
++	Limit       int
++	Offset      int
++	Unfiltered  bool
++	RequestType schemas.RequestType
+ 	// VK-based filtering: populated when a virtual key is found in request headers.
+ 	// HasVKFilter=true restricts providers/models to those allowed by the VK.
+ 	HasVKFilter       bool
+@@ -719,6 +721,7 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
+ //   - query: Filter models by name (case-insensitive partial match)
+ //   - provider: Filter by specific provider name
+ //   - keys: Comma-separated list of key IDs to filter models accessible by those keys
++//   - request_type: Filter models by a Bifrost request type such as chat_completion
+ //   - unfiltered: If true, bypass provider-level model pool restrictions only
+ //   - limit: Maximum number of results to return (default: 20)
+ //   - offset: Number of results to skip (for pagination)
+@@ -761,6 +764,7 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
+ 			details.IsDeprecated = capabilities.IsDeprecated
+ 			details.AdditionalAttributes = capabilities.AdditionalAttributes
+ 		}
++		details.SupportedRequestTypes = modelCatalog.GetSupportedRequestTypes(model.Name)
+ 		responseModels = append(responseModels, details)
+ 	}
+ 
+@@ -784,10 +788,11 @@ func (h *ProviderHandler) isModelDeprecated(model string, provider schemas.Model
+ func (h *ProviderHandler) parseModelListQuery(ctx *fasthttp.RequestCtx, defaultLimit int) (modelListQuery, bool) {
+ 	queryArgs := ctx.QueryArgs()
+ 	query := modelListQuery{
+-		Provider:   schemas.ModelProvider(string(queryArgs.Peek("provider"))),
+-		Query:      string(queryArgs.Peek("query")),
+-		Limit:      defaultLimit,
+-		Unfiltered: string(queryArgs.Peek("unfiltered")) == "true",
++		Provider:    schemas.ModelProvider(string(queryArgs.Peek("provider"))),
++		Query:       string(queryArgs.Peek("query")),
++		Limit:       defaultLimit,
++		Unfiltered:  string(queryArgs.Peek("unfiltered")) == "true",
++		RequestType: schemas.RequestType(string(queryArgs.Peek("request_type"))),
+ 	}
+ 
+ 	if keysRaw := queryArgs.Peek("keys"); len(keysRaw) > 0 {
+@@ -872,6 +877,15 @@ func (h *ProviderHandler) listManagementModels(query modelListQuery) ([]listedMo
+ 	models = slices.DeleteFunc(models, func(model listedModel) bool {
+ 		return h.isModelDeprecated(model.Name, model.Provider)
+ 	})
++	if query.RequestType != "" {
++		modelCatalog := h.inMemoryStore.ModelCatalog
++		if modelCatalog == nil {
++			return nil, 0, fmt.Errorf("model catalog not available")
++		}
++		models = slices.DeleteFunc(models, func(model listedModel) bool {
++			return !modelCatalog.IsRequestTypeSupported(model.Name, model.Provider, query.RequestType)
++		})
++	}
+ 
+ 	total := len(models)
+ 	if query.Offset > 0 {
+diff --git a/transports/bifrost-http/handlers/providers_test.go b/transports/bifrost-http/handlers/providers_test.go
+index a8f52da..aab107c 100644
+--- a/transports/bifrost-http/handlers/providers_test.go
++++ b/transports/bifrost-http/handlers/providers_test.go
+@@ -5,6 +5,7 @@ import (
+ 	"encoding/json"
+ 	"os"
+ 	"path/filepath"
++	"slices"
+ 	"strings"
+ 	"testing"
+ 
+@@ -365,6 +366,19 @@ func modelCatalogForPricingJSON(t *testing.T, pricingJSON []byte) *modelcatalog.
+ 	return modelcatalog.NewTestCatalogWithDatasheet(ds)
+ }
+ 
++func modelCatalogForModelParametersJSON(t *testing.T, paramsJSON []byte) *modelcatalog.ModelCatalog {
++	t.Helper()
++	paramsPath := filepath.Join(t.TempDir(), "model-parameters.json")
++	if err := os.WriteFile(paramsPath, paramsJSON, 0o600); err != nil {
++		t.Fatalf("write model parameters testdata: %v", err)
++	}
++	ds := datasheet.New(nil, nil, datasheet.Config{ModelParametersURL: "file://" + paramsPath})
++	if err := ds.LoadModelParamsFromURLIntoMemory(t.Context()); err != nil {
++		t.Fatalf("load model parameters testdata: %v", err)
++	}
++	return modelcatalog.NewTestCatalogWithDatasheet(ds)
++}
++
+ func TestListModels_UnknownKeysDoNotFilter(t *testing.T) {
+ 	SetLogger(&mockLogger{})
+ 
+@@ -710,6 +724,76 @@ func TestListModelDetails_UnknownKeysDoNotFilter(t *testing.T) {
+ 	}
+ }
+ 
++func TestListModelDetails_FiltersByRequestType(t *testing.T) {
++	SetLogger(&mockLogger{})
++
++	h := providerHandlerForTest(
++		schemas.OpenAI,
++		[]schemas.Key{{ID: "key-a"}},
++		[]string{"gpt-4o", "text-embedding-3-small", "unknown-model"},
++		[]string{"gpt-4o", "text-embedding-3-small", "unknown-model"},
++	)
++	h.inMemoryStore.ModelCatalog = modelCatalogForModelParametersJSON(t, []byte(`{
++		"gpt-4o": {
++			"mode": "chat",
++			"supported_endpoints": ["/v1/chat/completions", "/v1/responses"]
++		},
++		"text-embedding-3-small": {
++			"supported_endpoints": ["/v1/embeddings"]
++		}
++	}`))
++
++	ctx := &fasthttp.RequestCtx{}
++	ctx.Request.Header.SetMethod("GET")
++	ctx.Request.SetRequestURI("/api/models/details?provider=openai&request_type=chat_completion&limit=10")
++
++	h.listModelDetails(ctx)
++
++	if ctx.Response.StatusCode() != fasthttp.StatusOK {
++		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
++	}
++
++	var resp ListModelDetailsResponse
++	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
++		t.Fatalf("failed to unmarshal response: %v", err)
++	}
++
++	if resp.Total != 1 || len(resp.Models) != 1 {
++		t.Fatalf("expected only the chat-capable model, got %#v", resp.Models)
++	}
++	if resp.Models[0].Name != "gpt-4o" {
++		t.Fatalf("expected gpt-4o, got %s", resp.Models[0].Name)
++	}
++	if !slices.Contains(resp.Models[0].SupportedRequestTypes, schemas.ChatCompletionRequest) {
++		t.Fatalf("expected supported request types to include chat_completion, got %#v", resp.Models[0].SupportedRequestTypes)
++	}
++}
++
++func TestFilterListModelsResponseByRequestType(t *testing.T) {
++	catalog := modelCatalogForModelParametersJSON(t, []byte(`{
++		"gpt-4o": {
++			"mode": "chat",
++			"supported_endpoints": ["/v1/chat/completions"]
++		},
++		"text-embedding-3-small": {
++			"supported_endpoints": ["/v1/embeddings"]
++		}
++	}`))
++	resp := &schemas.BifrostListModelsResponse{
++		Data: []schemas.Model{
++			{ID: "openai/gpt-4o"},
++			{ID: "openai/text-embedding-3-small"},
++			{ID: "openai/unknown-model"},
++		},
++	}
++
++	filterListModelsResponseByRequestType(resp, catalog, schemas.ChatCompletionRequest)
++
++	if len(resp.Data) != 1 || resp.Data[0].ID != "openai/gpt-4o" {
++		t.Fatalf("expected only chat-capable model, got %#v", resp.Data)
++	}
++}
++
+ func TestListModelDetails_SkipsUnknownKeysAndFiltersWithValid(t *testing.T) {
+ 	SetLogger(&mockLogger{})
+ 
+-- 
+2.54.0
+

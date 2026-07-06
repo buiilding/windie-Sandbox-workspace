@@ -1,0 +1,12 @@
+[submodule "windie"]
+	path = windie
+	url = https://github.com/buiilding/Windie-Sandbox.git
+	branch = main
+[submodule "bifrost"]
+	path = bifrost
+	url = https://github.com/maximhq/bifrost.git
+	branch = dev
+[submodule "cua"]
+	path = cua
+	url = https://github.com/trycua/cua.git
+	branch = main

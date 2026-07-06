@@ -1,0 +1,6 @@
+.env
+.DS_Store
+
+windie/.env
+
+*.log
