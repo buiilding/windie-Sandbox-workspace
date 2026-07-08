@@ -31,3 +31,11 @@ if command -v cua-driver >/dev/null 2>&1; then
 else
   echo "cua-driver missing from PATH; CUA MCP tools will not be listed"
 fi
+
+echo
+echo "DesktopCommanderMCP"
+git -C "$ROOT/DesktopCommanderMCP" log -1 --oneline
+
+echo
+echo "blender-mcp"
+git -C "$ROOT/blender-mcp" log -1 --oneline

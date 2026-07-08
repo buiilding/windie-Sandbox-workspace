@@ -6,6 +6,8 @@ This repository pins the local Windie development stack in one place:
 windie   -> Windie runtime, API, and inspector UI
 bifrost  -> local gateway used by Windie
 cua      -> CUA source tree used by Windie's approved CUA MCP provider
+DesktopCommanderMCP -> Desktop Commander MCP source tree for reference
+blender-mcp         -> Blender MCP source tree for reference
 ```
 
 The repositories stay as submodules so each project keeps its own history and ownership.
@@ -16,6 +18,8 @@ The repositories stay as submodules so each project keeps its own history and ow
 windie/           Windie runtime repository
 bifrost/          Windie Bifrost fork
 cua/              CUA repository
+DesktopCommanderMCP/ Desktop Commander MCP repository
+blender-mcp/      Blender MCP repository
 scripts/          Workspace helpers
 ```
 

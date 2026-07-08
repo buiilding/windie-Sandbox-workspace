@@ -10,3 +10,11 @@
 	path = cua
 	url = https://github.com/trycua/cua.git
 	branch = main
+[submodule "DesktopCommanderMCP"]
+	path = DesktopCommanderMCP
+	url = https://github.com/wonderwhy-er/DesktopCommanderMCP.git
+	branch = main
+[submodule "blender-mcp"]
+	path = blender-mcp
+	url = https://github.com/ahujasid/blender-mcp.git
+	branch = main
