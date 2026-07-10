@@ -4,3 +4,4 @@
 windie/.env
 
 *.log
+.runtime/

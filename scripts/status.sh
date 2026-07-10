@@ -10,6 +10,9 @@ echo
 echo "Windie"
 if [ -x "$ROOT/windie/target/release/windie" ]; then
   "$ROOT/windie/target/release/windie" --version
+  WINDIE_DATA_DIR="$ROOT/.runtime/windie" \
+    WINDIE_CONFIG_DIR="$ROOT/.runtime/config" \
+    "$ROOT/windie/target/release/windie" doctor
 else
   echo "release binary missing: run ./scripts/bootstrap.sh"
 fi
@@ -17,9 +20,9 @@ fi
 echo
 echo "Bifrost"
 if [ -x "$ROOT/bifrost/tmp/bifrost-http" ]; then
-  echo "local gateway binary present: bifrost/tmp/bifrost-http"
+  echo "official local gateway binary available for explicit workspace override: bifrost/tmp/bifrost-http"
 else
-  echo "local gateway binary missing: build Bifrost or let Windie use its public fallback"
+  echo "local gateway binary missing: Windie will use pinned public npm or Docker Bifrost"
 fi
 
 git -C "$ROOT/bifrost" log -1 --oneline

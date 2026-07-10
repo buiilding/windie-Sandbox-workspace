@@ -1,22 +1,24 @@
 # Windie Sandbox Workspace
 
-This repository pins the local Windie development stack in one place:
+This repository is a development and source-reference workspace:
 
 ```text
 windie   -> Windie runtime, API, and inspector UI
-bifrost  -> local gateway used by Windie
-cua      -> CUA source tree used by Windie's approved CUA MCP provider
+bifrost  -> official Maxim Bifrost source for compatibility study
+cua      -> CUA source tree for integration study
 DesktopCommanderMCP -> Desktop Commander MCP source tree for reference
 blender-mcp         -> Blender MCP source tree for reference
 ```
 
-The repositories stay as submodules so each project keeps its own history and ownership.
+The repositories stay as submodules so each project keeps its own history and
+ownership. They are not included in Windie release packages. Installed Windie
+uses the projects' public npm, Python, Docker, or executable interfaces.
 
 ## Layout
 
 ```text
 windie/           Windie runtime repository
-bifrost/          Windie Bifrost fork
+bifrost/          Official maximhq/bifrost development branch
 cua/              CUA repository
 DesktopCommanderMCP/ Desktop Commander MCP repository
 blender-mcp/      Blender MCP repository
@@ -31,22 +33,25 @@ cd windie-Sandbox-workspace
 ./scripts/bootstrap.sh
 ```
 
-`bootstrap.sh` does three explicit things:
+`bootstrap.sh` does two explicit things:
 
 1. Initializes submodules.
 2. Builds the Windie release binary.
 
 It does not install provider keys or silently install CUA system permissions.
 
-## Provider Keys
+## Provider Secrets
 
-Copy `.env.example` to `windie/.env` and fill the provider keys you want Bifrost to use:
+Copy `.env.example` to `windie/.env` for provider secrets referenced by your
+Bifrost configuration:
 
 ```bash
 cp .env.example windie/.env
 ```
 
-Windie passes `windie/.env` to Bifrost gateway startup. This keeps provider keys explicit instead of inherited from the shell.
+Windie passes `windie/.env` to Bifrost gateway startup. Windie does not create
+provider rows from these variables. Configure providers through the official
+Bifrost UI at `http://localhost:8080` and use `env.KEY_NAME` secret references.
 
 ## CUA Driver
 
@@ -78,8 +83,11 @@ Then open the inspector URL printed by the frontend dev server.
 ./scripts/status.sh
 ```
 
-This prints submodule commits and checks whether the Windie binary, local Bifrost binary, and `cua-driver` command are available.
+This prints submodule commits and runs `windie doctor` when the binary exists.
 
-## Bifrost Fork
+## Packaging Boundary
 
-The `bifrost` submodule points at `buiilding/bifrost` branch `windie-dev`. That branch contains the Bifrost changes Windie expects for local gateway startup and model listing.
+The `bifrost` submodule tracks official `maximhq/bifrost` branch `dev`. CUA,
+Desktop Commander, and Blender MCP remain here because their code is useful for
+understanding and debugging integrations. `windie/scripts/package-release.sh`
+packages only the Windie binary and compiled operator UI.
