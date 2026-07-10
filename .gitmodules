@@ -4,8 +4,8 @@
 	branch = main
 [submodule "bifrost"]
 	path = bifrost
-	url = https://github.com/buiilding/bifrost.git
-	branch = windie-dev
+	url = https://github.com/maximhq/bifrost.git
+	branch = dev
 [submodule "cua"]
 	path = cua
 	url = https://github.com/trycua/cua.git
